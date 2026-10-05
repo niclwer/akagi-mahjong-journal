@@ -1,0 +1,21 @@
+'use strict';
+const $=id=>document.getElementById(id),fmt=n=>Number(n).toLocaleString('zh-TW');
+const key=new URLSearchParams(location.hash.slice(1)).get('k')||sessionStorage.getItem('githubViewerKey');if(key)sessionStorage.setItem('githubViewerKey',key);
+function decode64(s){return Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));}
+async function decrypt(body){if(body.v!==1||body.alg!=='A256GCM')throw Error('不支援的資料格式');const secret=await crypto.subtle.importKey('raw',decode64(key),'AES-GCM',false,['decrypt']);const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:decode64(body.iv)},secret,decode64(body.ciphertext));return JSON.parse(new TextDecoder().decode(plain));}
+let data=null,range='today',limit=30,loading=false;
+const day=t=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t));
+const time=t=>new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(t));
+function render(){if(!data)return;const r=data.rank;
+  $('rankName').textContent=r?.label||'尚未收到段位';$('points').textContent=r?fmt(r.score):'—';$('cap').textContent=r?.cap?'/ '+fmt(r.cap):'';
+  $('progress').hidden=!r?.cap;if(r?.cap)$('progress').value=Math.max(0,Math.min(100,r.score/r.cap*100));
+  $('remaining').textContent=r?.cap?'距離升段 '+fmt(Math.max(0,r.cap-r.score))+' pt':'等待段位門檻資料';$('rankTime').textContent=r?'資料 '+time(r.at):'請先在 Akagi 登入雀魂';
+  const today=day(Date.now()),week=new Date(today+'T00:00:00+08:00').getTime()-6*86400000;
+  const games=data.games.filter(g=>range==='all'||(range==='today'?day(g.at)===today:Date.parse(g.at)>=week));
+  const counts=[1,2,3].map(n=>games.filter(g=>g.rank===n).length);$('count').textContent=games.length;$('average').textContent=games.length?(games.reduce((a,g)=>a+g.rank,0)/games.length).toFixed(2):'—';$('winrate').textContent=games.length?Math.round(counts[0]/games.length*100)+'%':'—';['first','second','third'].forEach((id,i)=>$(id).textContent=counts[i]);
+  const nodes=games.slice(0,limit).map(g=>{const row=document.createElement('article');row.className='game';const badge=document.createElement('div');badge.className='place r'+g.rank;badge.textContent=g.rank;badge.setAttribute('aria-label','第 '+g.rank+' 名');const info=document.createElement('div');info.className='game-info';const title=document.createElement('strong');title.textContent=g.mode;const date=document.createElement('small');date.textContent=time(g.at);info.append(title,date);const result=document.createElement('div');result.className='result';const score=document.createElement('strong');score.textContent=fmt(g.score)+' 點';const change=document.createElement('small');change.textContent='段位 '+(g.rankDelta===null?'—':(g.rankDelta>0?'+':'')+fmt(g.rankDelta)+' pt');if(g.rankDelta!==null)change.className=g.rankDelta>=0?'positive':'negative';result.append(score,change);row.append(badge,info,result);return row;});
+  if(!nodes.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='這段期間還沒有已完成的三麻紀錄';nodes.push(empty);}$('games').replaceChildren(...nodes);$('more').hidden=games.length<=limit;
+  $('checked').textContent='資料時間 '+time(data.checkedAt)+' · 每分鐘檢查更新';
+}
+async function refresh(){if(loading)return;loading=true;try{if(!key)throw Error('請使用含有解密碼的完整專用連結。');const response=await fetch('./snapshot.json?t='+Math.floor(Date.now()/60000),{signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('資料下載失敗');let next;try{next=await decrypt(await response.json());}catch{throw Error('無法解密，請確認使用最新的完整專用連結。');}data=next;render();$('sync').textContent='● 已載入';$('error').hidden=true;}catch(e){$('sync').textContent='尚未更新';$('error').textContent=(data?'目前保留上次資料。':'')+(e.message.includes('完整')?e.message:'暫時無法下載資料，稍後會自動重試。');$('error').hidden=false;}finally{loading=false;}}
+document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{range=b.dataset.range;limit=30;document.querySelectorAll('[data-range]').forEach(x=>x.setAttribute('aria-pressed',x===b));render();});$('more').onclick=()=>{limit+=30;render();};$('refresh').onclick=refresh;document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});refresh();setInterval(refresh,60000);
